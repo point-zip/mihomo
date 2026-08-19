@@ -18,13 +18,11 @@ import (
 func clientHelloSummary(uConn *UConn) summary {
 	hello := uConn.HandshakeState.Hello
 
-	extensions := make([]uint16, 0, len(uConn.Extensions))
 	alpn := []string(nil)
 	var groups []utls.CurveID
 	var keyShareGroups []utls.CurveID
 	var signatureSchemes []utls.SignatureScheme
 	for _, extension := range uConn.Extensions {
-		extensions = append(extensions, uint16(extension.Type()))
 		switch extension := extension.(type) {
 		case *utls.ALPNExtension:
 			alpn = extension.AlpnProtocols
@@ -42,34 +40,31 @@ func clientHelloSummary(uConn *UConn) summary {
 	return summary{
 		versions:         append([]uint16(nil), hello.SupportedVersions...),
 		cipherSuites:     append([]uint16(nil), hello.CipherSuites...),
-		extensions:       extensions,
 		supportedGroups:  append([]utls.CurveID(nil), groups...),
 		keyShareGroups:   keyShareGroups,
 		signatureSchemes: signatureSchemes,
 		alpn:             alpn,
-		echConfigListSet: len(hello.EncryptedClientHelloConfigList) > 0,
 	}
 }
 
 type summary struct {
 	versions         []uint16
 	cipherSuites     []uint16
-	extensions       []uint16
 	supportedGroups  []utls.CurveID
 	keyShareGroups   []utls.CurveID
 	signatureSchemes []utls.SignatureScheme
 	alpn             []string
-	echConfigListSet bool
 }
 
 func TestChromeClientHelloSummary(t *testing.T) {
 	cases := []struct {
-		name      string
-		config    *utls.Config
-		mutate    func(*UConn) error
-		wantALPN  []string
-		wantECH   bool
-		wantNoECH bool
+		name       string
+		config     *utls.Config
+		echList    []byte
+		mutate     func(*UConn) error
+		wantALPN   []string
+		wantECH    bool
+		wantNoECH  bool
 	}{
 		{
 			name: "chrome_https",
@@ -91,10 +86,10 @@ func TestChromeClientHelloSummary(t *testing.T) {
 		{
 			name: "chrome_ech",
 			config: &utls.Config{
-				ServerName:                     "example.com",
-				NextProtos:                     []string{"h2", "http/1.1"},
-				EncryptedClientHelloConfigList: genECHConfigList(t),
+				ServerName: "example.com",
+				NextProtos: []string{"h2", "http/1.1"},
 			},
+			echList:  genECHConfigList(t),
 			wantALPN: []string{"h2", "http/1.1"},
 			wantECH:  true,
 		},
@@ -117,7 +112,20 @@ func TestChromeClientHelloSummary(t *testing.T) {
 			defer client.Close()
 			defer server.Close()
 
-			uConfig := UConfig(toStdConfig(tc.config))
+			source := toStdConfig(tc.config)
+			if tc.echList != nil {
+				source.EncryptedClientHelloConfigList = tc.echList
+			}
+			uConfig := UConfig(source)
+			// The adapter must copy the ECH list into the uTLS config, and must
+			// never modify the caller's source config.
+			if !reflect.DeepEqual(source.EncryptedClientHelloConfigList, tc.echList) {
+				t.Fatalf("source ECH config mutated: %x, want %x", source.EncryptedClientHelloConfigList, tc.echList)
+			}
+			if tc.wantECH && !reflect.DeepEqual(uConfig.EncryptedClientHelloConfigList, tc.echList) {
+				t.Fatalf("uTLS ECH config = %x, want %x", uConfig.EncryptedClientHelloConfigList, tc.echList)
+			}
+
 			uConn := UClient(client, uConfig, utls.HelloChrome_Auto)
 			if err := uConn.BuildHandshakeState(); err != nil {
 				t.Fatalf("BuildHandshakeState: %v", err)
@@ -138,11 +146,8 @@ func TestChromeClientHelloSummary(t *testing.T) {
 			if !reflect.DeepEqual(got.alpn, tc.wantALPN) {
 				t.Fatalf("ALPN = %v, want %v", got.alpn, tc.wantALPN)
 			}
-			if tc.wantECH && !got.echConfigListSet {
-				t.Fatal("ECH config supplied but no ECH config list on the hello")
-			}
-			if tc.wantNoECH && got.echConfigListSet {
-				t.Fatal("unexpected ECH config list on the hello")
+			if tc.wantNoECH && len(uConfig.EncryptedClientHelloConfigList) > 0 {
+				t.Fatal("unexpected ECH config list in the uTLS config")
 			}
 		})
 	}
@@ -150,9 +155,8 @@ func TestChromeClientHelloSummary(t *testing.T) {
 
 func toStdConfig(config *utls.Config) *tls.Config {
 	return &tls.Config{
-		ServerName:                     config.ServerName,
-		NextProtos:                     config.NextProtos,
-		EncryptedClientHelloConfigList: config.EncryptedClientHelloConfigList,
+		ServerName: config.ServerName,
+		NextProtos: config.NextProtos,
 	}
 }
 
