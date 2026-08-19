@@ -1,15 +1,14 @@
 package tls
 
 import (
-	"encoding/base64"
+	"crypto/rand"
 	"net"
 	"reflect"
 	"testing"
 
-	"github.com/metacubex/mihomo/component/ech"
-
 	"github.com/metacubex/tls"
 	utls "github.com/metacubex/utls"
+	"golang.org/x/crypto/cryptobyte"
 )
 
 // clientHelloSummary extracts only the stable, structurally meaningful fields
@@ -171,17 +170,39 @@ func toStdConfig(config *utls.Config) *tls.Config {
 	}
 }
 
+// genECHConfigList builds a structurally valid ECHConfigList for the ECH
+// test case. It must not import the ech package: ech imports component/tls,
+// and a test in package tls importing it would create an import cycle.
+// The list format matches what the uTLS ECH client parses: a uint16
+// length-prefixed ECHConfig carrying version 0xfe0d, an X25519 public key,
+// one cipher suite, and a public name.
 func genECHConfigList(t *testing.T) []byte {
 	t.Helper()
-	configBase64, _, err := ech.GenECHConfig("example.com")
-	if err != nil {
-		t.Fatalf("GenECHConfig: %v", err)
+	publicKey := make([]byte, 32)
+	if _, err := rand.Read(publicKey); err != nil {
+		t.Fatalf("rand: %v", err)
 	}
-	echConfigList, err := base64Decode(configBase64)
-	if err != nil {
-		t.Fatalf("decode ECH config: %v", err)
-	}
-	return echConfigList
+	builder := cryptobyte.NewBuilder(nil)
+	builder.AddUint16LengthPrefixed(func(builder *cryptobyte.Builder) {
+		builder.AddUint16(0xfe0d) // ECHConfig version
+		builder.AddUint16LengthPrefixed(func(builder *cryptobyte.Builder) {
+			builder.AddUint8(0)       // config_id
+			builder.AddUint16(0x0020) // DHKEM_X25519_HKDF_SHA256
+			builder.AddUint16LengthPrefixed(func(builder *cryptobyte.Builder) {
+				builder.AddBytes(publicKey)
+			})
+			builder.AddUint16LengthPrefixed(func(builder *cryptobyte.Builder) {
+				builder.AddUint16(0x0001) // KDF_HKDF_SHA256
+				builder.AddUint16(0x0001) // AEAD_AES_128_GCM
+			})
+			builder.AddUint8(0) // maximum_name_length
+			builder.AddUint8LengthPrefixed(func(builder *cryptobyte.Builder) {
+				builder.AddBytes([]byte("example.com"))
+			})
+			builder.AddUint16(0) // extensions
+		})
+	})
+	return builder.BytesOrPanic()
 }
 
 func contains(values []uint16, target uint16) bool {
@@ -191,8 +212,4 @@ func contains(values []uint16, target uint16) bool {
 		}
 	}
 	return false
-}
-
-func base64Decode(value string) ([]byte, error) {
-	return base64.StdEncoding.DecodeString(value)
 }
