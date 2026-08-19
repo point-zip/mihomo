@@ -1,0 +1,72 @@
+name: Light CI
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - ci-light
+
+concurrency:
+  group: "${{ github.workflow }}-${{ github.ref }}"
+  cancel-in-progress: true
+
+jobs:
+  build-amd64-v3:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c
+        with:
+          go-download-base-url: 'https://github.com/MetaCubeX/go/releases/download/build'
+          go-version: '1.26'
+
+      - name: Verify Go installation
+        run: go version
+
+      - name: Verify Go env
+        run: go env
+
+      - name: Set variables
+        run: |
+          VERSION="${GITHUB_REF_NAME,,}-$(git rev-parse --short HEAD)"
+          VERSION="${VERSION//\//-}"
+          echo "VERSION=${VERSION}" >> $GITHUB_ENV
+          echo "BUILDTIME=$(date)" >> $GITHUB_ENV
+          echo "CGO_ENABLED=0" >> $GITHUB_ENV
+          echo "BUILDTAG=-extldflags --static" >> $GITHUB_ENV
+          echo "GOTOOLCHAIN=local" >> $GITHUB_ENV
+
+      - name: Build core
+        env:
+          GOOS: linux
+          GOARCH: amd64
+          GOAMD64: v3
+        run: |
+          go build -v -tags "with_gvisor" -trimpath -ldflags "${BUILDTAG} -X 'github.com/metacubex/mihomo/constant.Version=${VERSION}' -X 'github.com/metacubex/mihomo/constant.BuildTime=${BUILDTIME}' -w -s -buildid="
+
+  test-linux:
+    runs-on: ubuntu-latest
+    env:
+      CGO_ENABLED: 0
+      GOTOOLCHAIN: local
+      SKIP_CONCURRENT_TEST: 1
+      SKIP_INTEROP_TEST: 1
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c
+        with:
+          go-download-base-url: 'https://github.com/MetaCubeX/go/releases/download/build'
+          go-version: '1.26'
+
+      - name: Verify Go installation
+        run: go version
+
+      - name: Test
+        run: |
+          go test ./... -count=1
+          echo "---test with_gvisor---"
+          go test ./... -tags "with_gvisor" -count=1
