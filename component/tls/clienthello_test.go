@@ -15,65 +15,51 @@ import (
 // from a built ClientHello. Random bytes, session IDs, key-share public
 // values, GREASE, and ECH ciphertexts are deliberately excluded so the test
 // does not depend on random handshake values.
-func clientHelloSummary(hello *utls.PubClientHelloMsg) summary {
-	extensions := make([]uint16, 0, len(hello.Extensions))
-	for _, extension := range hello.Extensions {
-		extensions = append(extensions, uint16(extension.Type()))
-	}
+func clientHelloSummary(uConn *UConn) summary {
+	hello := uConn.HandshakeState.Hello
 
-	var alpn []string
-	if extension := findExtension[*utls.ALPNExtension](hello); extension != nil {
-		alpn = extension.AlpnProtocols
-	}
-
+	extensions := make([]uint16, 0, len(uConn.Extensions))
+	alpn := []string(nil)
 	var groups []utls.CurveID
-	if extension := findExtension[*utls.SupportedCurvesExtension](hello); extension != nil {
-		groups = extension.Curves
-	}
-
 	var keyShareGroups []utls.CurveID
-	if extension := findExtension[*utls.KeyShareExtension](hello); extension != nil {
-		for _, share := range extension.KeyShares {
-			keyShareGroups = append(keyShareGroups, share.Group)
-		}
-	}
-
 	var signatureSchemes []utls.SignatureScheme
-	if extension := findExtension[*utls.SignatureAlgorithmsExtension](hello); extension != nil {
-		signatureSchemes = extension.SupportedSignatureAlgorithms
+	for _, extension := range uConn.Extensions {
+		extensions = append(extensions, uint16(extension.Type()))
+		switch extension := extension.(type) {
+		case *utls.ALPNExtension:
+			alpn = extension.AlpnProtocols
+		case *utls.SupportedCurvesExtension:
+			groups = extension.Curves
+		case *utls.KeyShareExtension:
+			for _, share := range extension.KeyShares {
+				keyShareGroups = append(keyShareGroups, share.Group)
+			}
+		case *utls.SignatureAlgorithmsExtension:
+			signatureSchemes = extension.SupportedSignatureAlgorithms
+		}
 	}
 
 	return summary{
-		versions:          append([]uint16(nil), hello.SupportedVersions...),
-		cipherSuites:      append([]uint16(nil), hello.CipherSuites...),
-		extensions:        extensions,
-		supportedGroups:   append([]utls.CurveID(nil), groups...),
-		keyShareGroups:    keyShareGroups,
-		signatureSchemes:  signatureSchemes,
-		alpn:              alpn,
-		echConfigListSeen: findExtension[*utls.ECHGREASEAndDeprecatedExtension](hello) != nil,
+		versions:         append([]uint16(nil), hello.SupportedVersions...),
+		cipherSuites:     append([]uint16(nil), hello.CipherSuites...),
+		extensions:       extensions,
+		supportedGroups:  append([]utls.CurveID(nil), groups...),
+		keyShareGroups:   keyShareGroups,
+		signatureSchemes: signatureSchemes,
+		alpn:             alpn,
+		echConfigListSet: len(hello.EncryptedClientHelloConfigList) > 0,
 	}
-}
-
-func findExtension[T any](hello *utls.PubClientHelloMsg) T {
-	var zero T
-	for _, extension := range hello.Extensions {
-		if typed, ok := extension.(T); ok {
-			return typed
-		}
-	}
-	return zero
 }
 
 type summary struct {
-	versions          []uint16
-	cipherSuites      []uint16
-	extensions        []uint16
-	supportedGroups   []utls.CurveID
-	keyShareGroups    []utls.CurveID
-	signatureSchemes  []utls.SignatureScheme
-	alpn              []string
-	echConfigListSeen bool
+	versions         []uint16
+	cipherSuites     []uint16
+	extensions       []uint16
+	supportedGroups  []utls.CurveID
+	keyShareGroups   []utls.CurveID
+	signatureSchemes []utls.SignatureScheme
+	alpn             []string
+	echConfigListSet bool
 }
 
 func TestChromeClientHelloSummary(t *testing.T) {
@@ -105,8 +91,8 @@ func TestChromeClientHelloSummary(t *testing.T) {
 		{
 			name: "chrome_ech",
 			config: &utls.Config{
-				ServerName:             "example.com",
-				NextProtos:             []string{"h2", "http/1.1"},
+				ServerName:                     "example.com",
+				NextProtos:                     []string{"h2", "http/1.1"},
 				EncryptedClientHelloConfigList: genECHConfigList(t),
 			},
 			wantALPN: []string{"h2", "http/1.1"},
@@ -142,7 +128,7 @@ func TestChromeClientHelloSummary(t *testing.T) {
 				}
 			}
 
-			got := clientHelloSummary(uConn.HandshakeState.Hello)
+			got := clientHelloSummary(uConn)
 			if got.versions == nil {
 				t.Fatal("no supported versions extracted")
 			}
@@ -152,11 +138,11 @@ func TestChromeClientHelloSummary(t *testing.T) {
 			if !reflect.DeepEqual(got.alpn, tc.wantALPN) {
 				t.Fatalf("ALPN = %v, want %v", got.alpn, tc.wantALPN)
 			}
-			if tc.wantECH && !got.echConfigListSeen {
-				t.Fatal("ECH config supplied but no ECH extension in the ClientHello")
+			if tc.wantECH && !got.echConfigListSet {
+				t.Fatal("ECH config supplied but no ECH config list on the hello")
 			}
-			if tc.wantNoECH && got.echConfigListSeen {
-				t.Fatal("unexpected ECH extension in the ClientHello")
+			if tc.wantNoECH && got.echConfigListSet {
+				t.Fatal("unexpected ECH config list on the hello")
 			}
 		})
 	}
