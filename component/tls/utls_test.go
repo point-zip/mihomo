@@ -3,7 +3,6 @@ package tls
 import (
 	"bytes"
 	"net"
-	"slices"
 	"testing"
 
 	"github.com/metacubex/tls"
@@ -75,10 +74,10 @@ func TestChromeClientHelloBuild(t *testing.T) {
 	if hello == nil {
 		t.Fatal("HandshakeState.Hello is nil")
 	}
-	if !slices.Contains(hello.SupportedVersions, utls.VersionTLS13) {
+	if !containsVersion(hello.SupportedVersions, utls.VersionTLS13) {
 		t.Fatalf("ClientHello does not offer TLS 1.3: %v", hello.SupportedVersions)
 	}
-	if !slices.Equal(hello.AlpnProtocols, []string{"h2", "http/1.1"}) {
+	if !equalStrings(hello.AlpnProtocols, []string{"h2", "http/1.1"}) {
 		t.Fatalf("ClientHello ALPN = %v, want [h2 http/1.1]", hello.AlpnProtocols)
 	}
 }
@@ -102,7 +101,7 @@ func TestBuildWebsocketHandshakeState(t *testing.T) {
 	if hello == nil {
 		t.Fatal("HandshakeState.Hello is nil")
 	}
-	if !slices.Equal(hello.AlpnProtocols, []string{"http/1.1"}) {
+	if !equalStrings(hello.AlpnProtocols, []string{"http/1.1"}) {
 		t.Fatalf("WebSocket ALPN = %v, want [http/1.1]", hello.AlpnProtocols)
 	}
 }
@@ -138,8 +137,10 @@ func TestBuildRemovedX25519MLKEM768HandshakeState(t *testing.T) {
 }
 
 func hasCurve(hello *utls.PubClientHelloMsg, curveID utls.CurveID) bool {
-	if slices.Contains(hello.SupportedCurves, curveID) {
-		return true
+	for _, supported := range hello.SupportedCurves {
+		if supported == curveID {
+			return true
+		}
 	}
 	for _, share := range hello.KeyShares {
 		if share.Group == curveID {
@@ -147,4 +148,25 @@ func hasCurve(hello *utls.PubClientHelloMsg, curveID utls.CurveID) bool {
 		}
 	}
 	return false
+}
+
+func containsVersion(versions []uint16, target uint16) bool {
+	for _, version := range versions {
+		if version == target {
+			return true
+		}
+	}
+	return false
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
